@@ -23,7 +23,7 @@ func TestExampleFunction_Known(t *testing.T) {
 			{
 				Config: `
 				output "test" {
-					value = provider::scaffolding::example("testvalue")
+					value = provider::ociext::example("testvalue")
 				}
 				`,
 				ConfigStateChecks: []statecheck.StateCheck{
@@ -47,7 +47,7 @@ func TestExampleFunction_Null(t *testing.T) {
 			{
 				Config: `
 				output "test" {
-					value = provider::scaffolding::example(null)
+					value = provider::ociext::example(null)
 				}
 				`,
 				// The parameter does not enable AllowNullValue
@@ -71,7 +71,7 @@ func TestExampleFunction_Unknown(t *testing.T) {
 				}
 				
 				output "test" {
-					value = provider::scaffolding::example(terraform_data.test.output)
+					value = provider::ociext::example(terraform_data.test.output)
 				}
 				`,
 				ConfigStateChecks: []statecheck.StateCheck{

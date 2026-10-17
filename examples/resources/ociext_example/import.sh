@@ -1,0 +1,1 @@
+terraform import ociext_example.example "id-123"

@@ -1,4 +1,4 @@
-module github.com/hashicorp/terraform-provider-scaffolding-framework
+module github.com/elayrana/terraform-provider-ociext
 
 go 1.25.8
 
