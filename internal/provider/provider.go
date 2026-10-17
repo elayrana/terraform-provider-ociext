@@ -7,10 +7,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/hashicorp/terraform-plugin-framework/action"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
-	"github.com/hashicorp/terraform-plugin-framework/ephemeral"
-	"github.com/hashicorp/terraform-plugin-framework/function"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -19,9 +16,6 @@ import (
 
 // Ensure OCIExtProvider satisfies various provider interfaces.
 var _ provider.Provider = &OCIExtProvider{}
-var _ provider.ProviderWithFunctions = &OCIExtProvider{}
-var _ provider.ProviderWithEphemeralResources = &OCIExtProvider{}
-var _ provider.ProviderWithActions = &OCIExtProvider{}
 
 // OCIExtProvider defines the provider implementation.
 type OCIExtProvider struct {
@@ -76,27 +70,9 @@ func (p *OCIExtProvider) Resources(ctx context.Context) []func() resource.Resour
 	}
 }
 
-func (p *OCIExtProvider) EphemeralResources(ctx context.Context) []func() ephemeral.EphemeralResource {
-	return []func() ephemeral.EphemeralResource{
-		NewExampleEphemeralResource,
-	}
-}
-
 func (p *OCIExtProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewExampleDataSource,
-	}
-}
-
-func (p *OCIExtProvider) Functions(ctx context.Context) []func() function.Function {
-	return []func() function.Function{
-		NewExampleFunction,
-	}
-}
-
-func (p *OCIExtProvider) Actions(ctx context.Context) []func() action.Action {
-	return []func() action.Action{
-		NewExampleAction,
 	}
 }
 
