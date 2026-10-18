@@ -63,10 +63,14 @@ func TestRuleKey(t *testing.T) {
 	ssh.Ports = types.StringValue("22")
 	ssh.SourcePorts = types.StringValue("1024-65535")
 
+	dns := egress("udp", "10.0.0.0/16")
+	dns.Ports = types.StringValue("53")
+
 	cases := map[string]nsgRuleModel{
 		"INGRESS_tcp_0.0.0.0/0_dst:443":                          https,
 		"INGRESS_icmp_10.0.0.0/8_icmp:3-4":                       icmp,
 		"INGRESS_tcp_10.0.1.0/24_src:1024-65535_dst:22":          ssh,
+		"EGRESS_udp_10.0.0.0/16_dst:53":                          dns,
 		"EGRESS_all_0.0.0.0/0":                                   egress("all", "0.0.0.0/0"),
 		"EGRESS_all_all-fra-services-in-oracle-services-network": egress("all", "all-fra-services-in-oracle-services-network"),
 	}
