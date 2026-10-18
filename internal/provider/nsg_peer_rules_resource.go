@@ -112,12 +112,12 @@ func (r *NSGPeerRulesResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
-	live, err := r.data.listRules(ctx, nsgID)
+	all, err := r.data.listRules(ctx, nsgID)
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to read NSG rules", err.Error())
 		return
 	}
-	live = inScope(live, true)
+	live := inScope(all, true)
 
 	// Peer rules that are not ours mean that another stack manages them or that
 	// someone created them by hand. Taking them over silently would remove them.
@@ -134,7 +134,7 @@ func (r *NSGPeerRulesResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
-	resp.Diagnostics.Append(r.data.applyRuleChanges(ctx, nsgID, diffRules(desired, live))...)
+	resp.Diagnostics.Append(r.data.applyRuleChanges(ctx, nsgID, diffRules(desired, live), len(all))...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -202,7 +202,7 @@ func (r *NSGPeerRulesResource) Update(ctx context.Context, req resource.UpdateRe
 		resp.Diagnostics.AddError("Unable to read NSG rules", err.Error())
 		return
 	}
-	resp.Diagnostics.Append(r.data.applyRuleChanges(ctx, nsgID, diffRules(desired, inScope(live, true)))...)
+	resp.Diagnostics.Append(r.data.applyRuleChanges(ctx, nsgID, diffRules(desired, inScope(live, true)), len(live))...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -227,7 +227,7 @@ func (r *NSGPeerRulesResource) Delete(ctx context.Context, req resource.DeleteRe
 		resp.Diagnostics.AddError("Unable to read NSG rules", err.Error())
 		return
 	}
-	resp.Diagnostics.Append(r.data.applyRuleChanges(ctx, nsgID, diffRules(nil, inScope(live, true)))...)
+	resp.Diagnostics.Append(r.data.applyRuleChanges(ctx, nsgID, diffRules(nil, inScope(live, true)), len(live))...)
 }
 
 // ImportState takes the NSG OCID: the peer rules are all its rules of type NSG.

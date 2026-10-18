@@ -169,7 +169,7 @@ func (r *NSGResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
-	resp.Diagnostics.Append(r.data.applyRuleChanges(ctx, nsgID, diffRules(desired, nil))...)
+	resp.Diagnostics.Append(r.data.applyRuleChanges(ctx, nsgID, diffRules(desired, nil), 0)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -282,7 +282,7 @@ func (r *NSGResource) Update(ctx context.Context, req resource.UpdateRequest, re
 			resp.Diagnostics.AddError("Unable to read NSG rules", err.Error())
 			return
 		}
-		resp.Diagnostics.Append(r.data.applyRuleChanges(ctx, nsgID, diffRules(desired, inScope(live, false)))...)
+		resp.Diagnostics.Append(r.data.applyRuleChanges(ctx, nsgID, diffRules(desired, inScope(live, false)), len(live))...)
 		if resp.Diagnostics.HasError() {
 			return
 		}

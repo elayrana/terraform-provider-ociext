@@ -3,7 +3,9 @@
 package provider
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -371,5 +373,62 @@ func TestOptionsAllowedByProtocol(t *testing.T) {
 				t.Errorf("%s with %s: expected an error", names[o], p)
 			}
 		}
+	}
+}
+
+func TestPlanRuleSteps(t *testing.T) {
+	rules := func(n int) []nsgRule { return make([]nsgRule, n) }
+	ids := func(n int) []string { return make([]string, n) }
+	// describe turns the steps into e.g. "+25 +5 ~3 -25 -5".
+	describe := func(steps []ruleStep) string {
+		var out []string
+		for _, s := range steps {
+			switch {
+			case len(s.Add) > 0:
+				out = append(out, fmt.Sprintf("+%d", len(s.Add)))
+			case len(s.Update) > 0:
+				out = append(out, fmt.Sprintf("~%d", len(s.Update)))
+			default:
+				out = append(out, fmt.Sprintf("-%d", len(s.Remove)))
+			}
+		}
+		return strings.Join(out, " ")
+	}
+
+	cases := []struct {
+		name         string
+		c            ruleChanges
+		count, limit int
+		want         string
+		maxCount     int // highest rule count reached in OCI
+	}{
+		{"room to spare: adds first", ruleChanges{Add: rules(30), Update: make([]liveRule, 3), Remove: ids(30)}, 50, 120, "+25 +5 ~3 -25 -5", 80},
+		{"near the limit: removes to make room", ruleChanges{Add: rules(30), Remove: ids(30)}, 110, 120, "+10 -25 +20 -5", 120},
+		{"at the limit", ruleChanges{Add: rules(1), Remove: ids(1)}, 120, 120, "-1 +1", 120},
+		{"new NSG", ruleChanges{Add: rules(120)}, 0, 120, "+25 +25 +25 +25 +20", 120},
+		{"over the limit with nothing to remove: OCI reports it", ruleChanges{Add: rules(5)}, 120, 120, "+5", 125},
+		{"higher tenancy limit", ruleChanges{Add: rules(30), Remove: ids(30)}, 650, 700, "+25 +5 -25 -5", 680},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			steps := planRuleSteps(tc.c, tc.count, tc.limit)
+			if got := describe(steps); got != tc.want {
+				t.Errorf("steps = %q, want %q", got, tc.want)
+			}
+			count, highest := tc.count, tc.count
+			for _, s := range steps {
+				count += len(s.Add) - len(s.Remove)
+				highest = max(highest, count)
+				if n := len(s.Add) + len(s.Update) + len(s.Remove); n > maxRulesPerCall {
+					t.Errorf("step with %d rules, the OCI limit per call is %d", n, maxRulesPerCall)
+				}
+			}
+			if highest != tc.maxCount {
+				t.Errorf("highest rule count = %d, want %d", highest, tc.maxCount)
+			}
+			if want := tc.count + len(tc.c.Add) - len(tc.c.Remove); count != want {
+				t.Errorf("final rule count = %d, want %d", count, want)
+			}
+		})
 	}
 }

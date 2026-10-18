@@ -543,6 +543,45 @@ func diffRules(desired []nsgRule, live []liveRule) ruleChanges {
 	return c
 }
 
+// ruleStep is one call to OCI: it adds, updates or removes up to maxRulesPerCall rules.
+type ruleStep struct {
+	Add    []nsgRule
+	Update []liveRule
+	Remove []string
+}
+
+// planRuleSteps orders the changes for an NSG that has count rules and allows limit.
+// New rules go in before old ones go out, so a rule that is replaced never leaves
+// a gap without access. Near the limit there is no room for that: then a batch of
+// old rules goes out first to make room.
+func planRuleSteps(c ruleChanges, count, limit int) []ruleStep {
+	var steps []ruleStep
+	add, remove := c.Add, c.Remove
+	for len(add) > 0 {
+		room := limit - count
+		if room <= 0 && len(remove) > 0 {
+			n := min(maxRulesPerCall, len(remove))
+			steps = append(steps, ruleStep{Remove: remove[:n]})
+			remove, count = remove[n:], count-n
+			continue
+		}
+		// Without room and nothing to remove, OCI rejects the call and reports the limit.
+		n := min(maxRulesPerCall, len(add))
+		if room > 0 {
+			n = min(n, room)
+		}
+		steps = append(steps, ruleStep{Add: add[:n]})
+		add, count = add[n:], count+n
+	}
+	for _, batch := range chunks(c.Update, maxRulesPerCall) {
+		steps = append(steps, ruleStep{Update: batch})
+	}
+	for _, batch := range chunks(remove, maxRulesPerCall) {
+		steps = append(steps, ruleStep{Remove: batch})
+	}
+	return steps
+}
+
 // stateRules turns the live rules into the set stored in state. Rules that
 // were already in the prior state keep the user's spelling (e.g. "tcp" vs "6",
 // "443" vs "443-443") so that refresh only reports real changes.

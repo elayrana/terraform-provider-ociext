@@ -241,51 +241,51 @@ func (d *providerData) listRules(ctx context.Context, nsgID string) ([]liveRule,
 	}
 }
 
-// applyRuleChanges adds new rules before removing old ones, so a rule that is
-// replaced (its traffic changed) never leaves a gap without access.
-func (d *providerData) applyRuleChanges(ctx context.Context, nsgID string, c ruleChanges) diag.Diagnostics {
+// applyRuleChanges applies the changes to an NSG that has count rules in OCI, in
+// the order of planRuleSteps.
+func (d *providerData) applyRuleChanges(ctx context.Context, nsgID string, c ruleChanges, count int) diag.Diagnostics {
 	var diags diag.Diagnostics
 	tflog.Info(ctx, "Applying NSG rule changes", map[string]any{
 		"id": nsgID, "add": len(c.Add), "update": len(c.Update), "remove": len(c.Remove),
 	})
 
-	for _, batch := range chunks(c.Add, maxRulesPerCall) {
-		details := make([]core.AddSecurityRuleDetails, len(batch))
-		for i, rule := range batch {
-			details[i] = rule.toAddDetails()
+	for _, step := range planRuleSteps(c, count, d.maxRulesPerNSG) {
+		var err error
+		switch {
+		case len(step.Add) > 0:
+			details := make([]core.AddSecurityRuleDetails, len(step.Add))
+			for i, rule := range step.Add {
+				details[i] = rule.toAddDetails()
+			}
+			_, err = d.network.AddNetworkSecurityGroupSecurityRules(ctx, core.AddNetworkSecurityGroupSecurityRulesRequest{
+				NetworkSecurityGroupId:                      common.String(nsgID),
+				AddNetworkSecurityGroupSecurityRulesDetails: core.AddNetworkSecurityGroupSecurityRulesDetails{SecurityRules: details},
+			})
+			if err != nil {
+				diags.AddError("Unable to add NSG rules", err.Error())
+			}
+		case len(step.Update) > 0:
+			details := make([]core.UpdateSecurityRuleDetails, len(step.Update))
+			for i, l := range step.Update {
+				details[i] = l.Rule.toUpdateDetails(l.ID)
+			}
+			_, err = d.network.UpdateNetworkSecurityGroupSecurityRules(ctx, core.UpdateNetworkSecurityGroupSecurityRulesRequest{
+				NetworkSecurityGroupId:                         common.String(nsgID),
+				UpdateNetworkSecurityGroupSecurityRulesDetails: core.UpdateNetworkSecurityGroupSecurityRulesDetails{SecurityRules: details},
+			})
+			if err != nil {
+				diags.AddError("Unable to update NSG rules", err.Error())
+			}
+		default:
+			_, err = d.network.RemoveNetworkSecurityGroupSecurityRules(ctx, core.RemoveNetworkSecurityGroupSecurityRulesRequest{
+				NetworkSecurityGroupId:                         common.String(nsgID),
+				RemoveNetworkSecurityGroupSecurityRulesDetails: core.RemoveNetworkSecurityGroupSecurityRulesDetails{SecurityRuleIds: step.Remove},
+			})
+			if err != nil {
+				diags.AddError("Unable to remove NSG rules", err.Error())
+			}
 		}
-		_, err := d.network.AddNetworkSecurityGroupSecurityRules(ctx, core.AddNetworkSecurityGroupSecurityRulesRequest{
-			NetworkSecurityGroupId:                      common.String(nsgID),
-			AddNetworkSecurityGroupSecurityRulesDetails: core.AddNetworkSecurityGroupSecurityRulesDetails{SecurityRules: details},
-		})
 		if err != nil {
-			diags.AddError("Unable to add NSG rules", err.Error())
-			return diags
-		}
-	}
-
-	for _, batch := range chunks(c.Update, maxRulesPerCall) {
-		details := make([]core.UpdateSecurityRuleDetails, len(batch))
-		for i, l := range batch {
-			details[i] = l.Rule.toUpdateDetails(l.ID)
-		}
-		_, err := d.network.UpdateNetworkSecurityGroupSecurityRules(ctx, core.UpdateNetworkSecurityGroupSecurityRulesRequest{
-			NetworkSecurityGroupId:                         common.String(nsgID),
-			UpdateNetworkSecurityGroupSecurityRulesDetails: core.UpdateNetworkSecurityGroupSecurityRulesDetails{SecurityRules: details},
-		})
-		if err != nil {
-			diags.AddError("Unable to update NSG rules", err.Error())
-			return diags
-		}
-	}
-
-	for _, batch := range chunks(c.Remove, maxRulesPerCall) {
-		_, err := d.network.RemoveNetworkSecurityGroupSecurityRules(ctx, core.RemoveNetworkSecurityGroupSecurityRulesRequest{
-			NetworkSecurityGroupId:                         common.String(nsgID),
-			RemoveNetworkSecurityGroupSecurityRulesDetails: core.RemoveNetworkSecurityGroupSecurityRulesDetails{SecurityRuleIds: batch},
-		})
-		if err != nil {
-			diags.AddError("Unable to remove NSG rules", err.Error())
 			return diags
 		}
 	}
