@@ -18,6 +18,9 @@ resource "ociext_nsg" "app" {
   vcn_id         = var.vcn_id
   display_name   = "nsg-app"
 
+  defined_tags  = { "FinOps.stack" = "networking", "FinOps.environment" = "pre" }
+  freeform_tags = { team = "dba" }
+
   rules = [
     { direction = "INGRESS", protocol = "tcp", source = "0.0.0.0/0", ports = "443", description = "Public HTTPS" },
     { direction = "INGRESS", protocol = "tcp", source = "10.0.1.0/24", ports = "22", description = "SSH from bastion" },
@@ -57,8 +60,9 @@ resource "ociext_nsg" "db" {
 
 ### Optional
 
+- `defined_tags` (Map of String) Defined tags, written as `Namespace.key`, e.g. `{ "FinOps.stack" = "networking" }`. Without this attribute the tags are not managed: they are read from OCI and left as they are. Tags listed in the provider's `ignore_defined_tags` are never read into state and are kept on update.
 - `display_name` (String) Display name. OCI generates one when it is not set.
-- `freeform_tags` (Map of String) Free-form tags.
+- `freeform_tags` (Map of String) Free-form tags. Without this attribute the tags are not managed: they are read from OCI and left as they are. Set it to `{}` to remove them all.
 - `rules` (Attributes Set) Security rules of the NSG whose source or destination is a CIDR block or a service. Rules that point to an NSG go in `ociext_nsg_peer_rules`. (see [below for nested schema](#nestedatt--rules))
 
 ### Read-Only

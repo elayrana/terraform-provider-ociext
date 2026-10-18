@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/oracle/oci-go-sdk/v65/common"
@@ -46,6 +50,7 @@ type NSGResourceModel struct {
 	VcnID         types.String `tfsdk:"vcn_id"`
 	DisplayName   types.String `tfsdk:"display_name"`
 	FreeformTags  types.Map    `tfsdk:"freeform_tags"`
+	DefinedTags   types.Map    `tfsdk:"defined_tags"`
 	Rules         types.Set    `tfsdk:"rules"`
 }
 
@@ -89,9 +94,28 @@ func (r *NSGResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				},
 			},
 			"freeform_tags": schema.MapAttribute{
-				MarkdownDescription: "Free-form tags.",
-				ElementType:         types.StringType,
-				Optional:            true,
+				MarkdownDescription: "Free-form tags. Without this attribute the tags are not managed: they are read from OCI and left as they are. " +
+					"Set it to `{}` to remove them all.",
+				ElementType: types.StringType,
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Map{
+					mapplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"defined_tags": schema.MapAttribute{
+				MarkdownDescription: "Defined tags, written as `Namespace.key`, e.g. `{ \"FinOps.stack\" = \"networking\" }`. " +
+					"Without this attribute the tags are not managed: they are read from OCI and left as they are. " +
+					"Tags listed in the provider's `ignore_defined_tags` are never read into state and are kept on update.",
+				ElementType: types.StringType,
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.Map{
+					mapplanmodifier.UseStateForUnknown(),
+				},
+				Validators: []validator.Map{
+					mapvalidator.KeysAre(stringvalidator.RegexMatches(definedTagKey, "must be written as Namespace.key")),
+				},
 			},
 			"rules": rulesAttribute(false),
 		},
@@ -128,9 +152,16 @@ func (r *NSGResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
+	if err := r.data.checkRegion("vcn_id", plan.VcnID.ValueString()); err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("vcn_id"), "VCN in another region", err.Error())
+		return
+	}
+
 	desired, diags := desiredRules(ctx, plan.Rules, false)
 	resp.Diagnostics.Append(diags...)
-	tags, diags := freeformTags(ctx, plan.FreeformTags)
+	freeform, setFreeform, diags := tagsFromMap(ctx, plan.FreeformTags)
+	resp.Diagnostics.Append(diags...)
+	defined, setDefined, diags := tagsFromMap(ctx, plan.DefinedTags)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -139,7 +170,17 @@ func (r *NSGResource) Create(ctx context.Context, req resource.CreateRequest, re
 	details := core.CreateNetworkSecurityGroupDetails{
 		CompartmentId: plan.CompartmentID.ValueStringPointer(),
 		VcnId:         plan.VcnID.ValueStringPointer(),
-		FreeformTags:  tags,
+	}
+	if setFreeform {
+		details.FreeformTags = freeform
+	}
+	if setDefined {
+		d, err := definedTagsToOCI(defined)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("defined_tags"), "Invalid defined tags", err.Error())
+			return
+		}
+		details.DefinedTags = d
 	}
 	if !plan.DisplayName.IsUnknown() && !plan.DisplayName.IsNull() {
 		details.DisplayName = plan.DisplayName.ValueStringPointer()
@@ -155,6 +196,15 @@ func (r *NSGResource) Create(ctx context.Context, req resource.CreateRequest, re
 	nsgID := *created.Id
 	plan.ID = types.StringValue(nsgID)
 	plan.DisplayName = types.StringPointerValue(created.DisplayName)
+	// Tags left to OCI take what it set, such as tag defaults.
+	if !setFreeform {
+		plan.FreeformTags, diags = tagsValue(ctx, created.FreeformTags)
+		resp.Diagnostics.Append(diags...)
+	}
+	if !setDefined {
+		plan.DefinedTags, diags = tagsValue(ctx, definedTagsFromOCI(created.DefinedTags, r.data.ignoredDefinedTags))
+		resp.Diagnostics.Append(diags...)
+	}
 
 	// Save the NSG before adding its rules so that a failure leaves it in state (tainted) instead of orphaned.
 	saved := plan
@@ -202,11 +252,11 @@ func (r *NSGResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	state.CompartmentID = types.StringPointerValue(got.CompartmentId)
 	state.VcnID = types.StringPointerValue(got.VcnId)
 	state.DisplayName = types.StringPointerValue(got.DisplayName)
-	if len(got.FreeformTags) > 0 || !state.FreeformTags.IsNull() {
-		tags, diags := types.MapValueFrom(ctx, types.StringType, got.FreeformTags)
-		resp.Diagnostics.Append(diags...)
-		state.FreeformTags = tags
-	}
+	var diags diag.Diagnostics
+	state.FreeformTags, diags = tagsValue(ctx, got.FreeformTags)
+	resp.Diagnostics.Append(diags...)
+	state.DefinedTags, diags = tagsValue(ctx, definedTagsFromOCI(got.DefinedTags, r.data.ignoredDefinedTags))
+	resp.Diagnostics.Append(diags...)
 
 	live, err := r.data.listRules(ctx, nsgID)
 	if err != nil {
@@ -214,8 +264,8 @@ func (r *NSGResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		return
 	}
 
-	rules, diags := rulesToState(ctx, state.Rules, inScope(live, false), nsgID)
-	resp.Diagnostics.Append(diags...)
+	rules, d := rulesToState(ctx, state.Rules, inScope(live, false), nsgID)
+	resp.Diagnostics.Append(d...)
 	state.Rules = rules
 	if resp.Diagnostics.HasError() {
 		return
@@ -247,21 +297,34 @@ func (r *NSGResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		}
 	}
 
-	if !plan.DisplayName.Equal(state.DisplayName) || !plan.FreeformTags.Equal(state.FreeformTags) {
-		tags, diags := freeformTags(ctx, plan.FreeformTags)
-		resp.Diagnostics.Append(diags...)
+	freeformChanged := !plan.FreeformTags.Equal(state.FreeformTags)
+	definedChanged := !plan.DefinedTags.Equal(state.DefinedTags)
+	if !plan.DisplayName.Equal(state.DisplayName) || freeformChanged || definedChanged {
+		details := core.UpdateNetworkSecurityGroupDetails{DisplayName: plan.DisplayName.ValueStringPointer()}
+		if freeformChanged {
+			tags, ok, diags := tagsFromMap(ctx, plan.FreeformTags)
+			resp.Diagnostics.Append(diags...)
+			if ok {
+				details.FreeformTags = tags
+			}
+		}
+		if definedChanged {
+			tags, ok, diags := tagsFromMap(ctx, plan.DefinedTags)
+			resp.Diagnostics.Append(diags...)
+			if ok {
+				d, err := r.liveDefinedTagsFor(ctx, nsgID, tags)
+				if err != nil {
+					resp.Diagnostics.AddAttributeError(path.Root("defined_tags"), "Unable to update defined tags", err.Error())
+				}
+				details.DefinedTags = d
+			}
+		}
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		if tags == nil {
-			tags = map[string]string{} // clears the tags removed from the config
-		}
 		updated, err := r.data.network.UpdateNetworkSecurityGroup(ctx, core.UpdateNetworkSecurityGroupRequest{
-			NetworkSecurityGroupId: common.String(nsgID),
-			UpdateNetworkSecurityGroupDetails: core.UpdateNetworkSecurityGroupDetails{
-				DisplayName:  plan.DisplayName.ValueStringPointer(),
-				FreeformTags: tags,
-			},
+			NetworkSecurityGroupId:            common.String(nsgID),
+			UpdateNetworkSecurityGroupDetails: details,
 		})
 		if err != nil {
 			resp.Diagnostics.AddError("Unable to update NSG", err.Error())
@@ -319,7 +382,29 @@ func (r *NSGResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 }
 
 func (r *NSGResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if r.data != nil {
+		if err := r.data.checkRegion("NSG", req.ID); err != nil {
+			resp.Diagnostics.AddError("NSG in another region", err.Error())
+			return
+		}
+	}
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// liveDefinedTagsFor returns the defined tags to send on update: the configured
+// ones plus the ignored ones the NSG has in OCI, which an update would otherwise delete.
+func (r *NSGResource) liveDefinedTagsFor(ctx context.Context, nsgID string, desired map[string]string) (map[string]map[string]interface{}, error) {
+	tags := desired
+	if len(r.data.ignoredDefinedTags) > 0 {
+		got, err := r.data.network.GetNetworkSecurityGroup(ctx, core.GetNetworkSecurityGroupRequest{
+			NetworkSecurityGroupId: common.String(nsgID),
+		})
+		if err != nil {
+			return nil, err
+		}
+		tags = keepIgnoredDefinedTags(desired, got.DefinedTags, r.data.ignoredDefinedTags)
+	}
+	return definedTagsToOCI(tags)
 }
 
 func (r *NSGResource) waitForState(ctx context.Context, nsgID string, target core.NetworkSecurityGroupLifecycleStateEnum) error {
@@ -345,15 +430,6 @@ func (r *NSGResource) waitForState(ctx context.Context, nsgID string, target cor
 		case <-time.After(3 * time.Second):
 		}
 	}
-}
-
-func freeformTags(ctx context.Context, m types.Map) (map[string]string, diag.Diagnostics) {
-	if m.IsNull() || m.IsUnknown() {
-		return nil, nil
-	}
-	tags := map[string]string{}
-	diags := m.ElementsAs(ctx, &tags, false)
-	return tags, diags
 }
 
 func isNotFound(err error) bool {

@@ -54,13 +54,13 @@ func TestAccNSG_basic(t *testing.T) {
 				),
 			},
 			{
-				// Remove the UDP rule, add an SSH rule, change a description, rename and drop the tags.
+				// Remove the UDP rule, add an SSH rule, change a description, rename and remove the tags.
 				Config: testAccNSGConfig(name+"-renamed", `[
     { direction = "INGRESS", protocol = "tcp", source = "0.0.0.0/0", ports = "443", description = "Public HTTPS" },
     { direction = "INGRESS", protocol = "tcp", source = "10.0.5.0/24", ports = "22" },
     { direction = "INGRESS", protocol = "icmp", source = "0.0.0.0/0", icmp_type = 3, icmp_code = 4 },
     { direction = "EGRESS", protocol = "all", destination = "0.0.0.0/0" },
-  ]`, ""),
+  ]`, `freeform_tags = {}`),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction("ociext_nsg.test", plancheck.ResourceActionUpdate),

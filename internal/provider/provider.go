@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -48,12 +49,18 @@ type OCIExtProviderModel struct {
 	ConfigFileProfile types.String `tfsdk:"config_file_profile"`
 	Region            types.String `tfsdk:"region"`
 	MaxRulesPerNSG    types.Int64  `tfsdk:"max_rules_per_nsg"`
+	IgnoreDefinedTags types.List   `tfsdk:"ignore_defined_tags"`
 }
 
 // providerData is handed to every resource on Configure.
 type providerData struct {
 	network        core.VirtualNetworkClient
+	region         string
 	maxRulesPerNSG int
+
+	// ignoredDefinedTags are "Namespace.key" defined tags that resources neither
+	// read into state nor remove, such as the Oracle-Tags that OCI sets.
+	ignoredDefinedTags map[string]bool
 }
 
 func (p *OCIExtProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -84,6 +91,15 @@ func (p *OCIExtProvider) Schema(ctx context.Context, req provider.SchemaRequest,
 				MarkdownDescription: "OCI region, e.g. `eu-frankfurt-1`. Defaults to the region of the profile or of the instance.",
 				Optional:            true,
 			},
+			"ignore_defined_tags": schema.ListAttribute{
+				MarkdownDescription: "Defined tags, written as `Namespace.key`, that resources ignore: they are not read into state and an update keeps them. " +
+					"Use it for tags that OCI or a tag default sets, e.g. `[\"Oracle-Tags.CreatedBy\", \"Oracle-Tags.CreatedOn\"]`, the same as in the `oracle/oci` provider.",
+				ElementType: types.StringType,
+				Optional:    true,
+				Validators: []validator.List{
+					listvalidator.ValueStringsAre(stringvalidator.RegexMatches(definedTagKey, "must be written as Namespace.key")),
+				},
+			},
 			"max_rules_per_nsg": schema.Int64Attribute{
 				MarkdownDescription: fmt.Sprintf("Maximum rules per NSG checked at plan time. Defaults to the OCI limit of %d; raise it only if your tenancy has a higher limit.", defaultMaxRulesPerNSG),
 				Optional:            true,
@@ -102,7 +118,7 @@ func (p *OCIExtProvider) Configure(ctx context.Context, req provider.ConfigureRe
 	}
 
 	if data.Auth.IsUnknown() || data.ConfigFilePath.IsUnknown() || data.ConfigFileProfile.IsUnknown() ||
-		data.Region.IsUnknown() || data.MaxRulesPerNSG.IsUnknown() {
+		data.Region.IsUnknown() || data.MaxRulesPerNSG.IsUnknown() || data.IgnoreDefinedTags.IsUnknown() {
 		resp.Diagnostics.AddError("Unknown provider configuration",
 			"The ociext provider configuration depends on values that are only known after apply. Use static values or variables.")
 		return
@@ -126,8 +142,14 @@ func (p *OCIExtProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		resp.Diagnostics.AddError("Unable to create the OCI networking client", err.Error())
 		return
 	}
+	region, err := configProvider.Region()
+	if err != nil {
+		resp.Diagnostics.AddError("Unable to read the OCI region", err.Error())
+		return
+	}
 	if !data.Region.IsNull() {
-		network.SetRegion(data.Region.ValueString())
+		region = data.Region.ValueString()
+		network.SetRegion(region)
 	}
 	retry := common.DefaultRetryPolicy()
 	network.Configuration.RetryPolicy = &retry
@@ -137,7 +159,19 @@ func (p *OCIExtProvider) Configure(ctx context.Context, req provider.ConfigureRe
 		maxRules = int(data.MaxRulesPerNSG.ValueInt64())
 	}
 
-	pd := &providerData{network: network, maxRulesPerNSG: maxRules}
+	ignored := map[string]bool{}
+	if !data.IgnoreDefinedTags.IsNull() {
+		var keys []string
+		resp.Diagnostics.Append(data.IgnoreDefinedTags.ElementsAs(ctx, &keys, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		for _, k := range keys {
+			ignored[k] = true
+		}
+	}
+
+	pd := &providerData{network: network, region: region, maxRulesPerNSG: maxRules, ignoredDefinedTags: ignored}
 	resp.DataSourceData = pd
 	resp.ResourceData = pd
 }

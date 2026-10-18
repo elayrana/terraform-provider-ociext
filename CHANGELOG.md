@@ -1,3 +1,18 @@
+## 0.2.0 (Unreleased)
+
+FEATURES:
+
+* `ociext_nsg`: new `defined_tags` attribute, written as `Namespace.key`.
+* provider: new `ignore_defined_tags` attribute, the same as in the `oracle/oci` provider: the listed defined tags (e.g. `Oracle-Tags.CreatedBy`) are not read into state and are kept on update.
+
+ENHANCEMENTS:
+
+* `ociext_nsg` and `ociext_nsg_peer_rules`: creating or importing with an OCID of another region than the provider configuration fails with an error that names both regions, instead of a 404 from OCI.
+
+BREAKING CHANGES:
+
+* `ociext_nsg`: `freeform_tags` is now Optional and Computed, like the tags of the `oracle/oci` provider. Without the attribute the tags are not managed: they are read from OCI and left as they are, so importing an NSG with tags no longer plans to remove them. To remove all the tags, set `freeform_tags = {}`.
+
 ## 0.1.0 (October 18, 2026)
 
 FEATURES:

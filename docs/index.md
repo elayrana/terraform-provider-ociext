@@ -17,6 +17,17 @@ Extra resources for Oracle Cloud Infrastructure. Credentials are read from an OC
 provider "ociext" {
   config_file_profile = "PERSONAL"
   region              = "eu-frankfurt-1"
+
+  # Tags that OCI sets through tag defaults: not read into state, kept on update.
+  ignore_defined_tags = ["Oracle-Tags.CreatedBy", "Oracle-Tags.CreatedOn"]
+}
+
+# A second region, e.g. for a DR replica: pass it to the resources with provider = ociext.dr.
+provider "ociext" {
+  alias               = "dr"
+  config_file_profile = "PERSONAL"
+  region              = "eu-madrid-1"
+  ignore_defined_tags = ["Oracle-Tags.CreatedBy", "Oracle-Tags.CreatedOn"]
 }
 ```
 
@@ -28,5 +39,6 @@ provider "ociext" {
 - `auth` (String) Authentication method: `ApiKey` (default, uses the config file) or `InstancePrincipal`.
 - `config_file_path` (String) Path to the OCI config file. Defaults to `~/.oci/config`.
 - `config_file_profile` (String) Profile of the OCI config file to use. Defaults to `DEFAULT`. Missing values are not filled in from other profiles.
+- `ignore_defined_tags` (List of String) Defined tags, written as `Namespace.key`, that resources ignore: they are not read into state and an update keeps them. Use it for tags that OCI or a tag default sets, e.g. `["Oracle-Tags.CreatedBy", "Oracle-Tags.CreatedOn"]`, the same as in the `oracle/oci` provider.
 - `max_rules_per_nsg` (Number) Maximum rules per NSG checked at plan time. Defaults to the OCI limit of 120; raise it only if your tenancy has a higher limit.
 - `region` (String) OCI region, e.g. `eu-frankfurt-1`. Defaults to the region of the profile or of the instance.

@@ -29,6 +29,7 @@ const (
 	envTestVcnID         = "OCIEXT_TEST_VCN_ID"
 	envTestRegion        = "OCIEXT_TEST_REGION"      // optional, defaults to the region of the profile
 	envTestConfigFile    = "OCIEXT_TEST_CONFIG_FILE" // optional, defaults to ~/.oci/config
+	envTestDefinedTag    = "OCIEXT_TEST_DEFINED_TAG" // optional, "Namespace.key" the tests may set; without it they skip defined tags
 )
 
 // testAccNamePrefix starts the display name of every NSG an acceptance test creates.
@@ -51,7 +52,12 @@ func testAccPreCheck(t *testing.T) {
 
 // testAccConfig prepends the provider block and the compartment and VCN locals to a test configuration.
 func testAccConfig(body string) string {
-	var optional string
+	return testAccConfigProvider("", body)
+}
+
+// testAccConfigProvider is testAccConfig with extra arguments in the provider block.
+func testAccConfigProvider(extra, body string) string {
+	optional := extra
 	if f := os.Getenv(envTestConfigFile); f != "" {
 		optional += fmt.Sprintf("  config_file_path    = %q\n", f)
 	}

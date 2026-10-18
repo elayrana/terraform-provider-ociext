@@ -3,6 +3,9 @@ resource "ociext_nsg" "app" {
   vcn_id         = var.vcn_id
   display_name   = "nsg-app"
 
+  defined_tags  = { "FinOps.stack" = "networking", "FinOps.environment" = "pre" }
+  freeform_tags = { team = "dba" }
+
   rules = [
     { direction = "INGRESS", protocol = "tcp", source = "0.0.0.0/0", ports = "443", description = "Public HTTPS" },
     { direction = "INGRESS", protocol = "tcp", source = "10.0.1.0/24", ports = "22", description = "SSH from bastion" },

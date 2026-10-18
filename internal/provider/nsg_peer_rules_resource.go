@@ -105,6 +105,10 @@ func (r *NSGPeerRulesResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 	nsgID := plan.NsgID.ValueString()
+	if err := r.data.checkRegion("nsg_id", nsgID); err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("nsg_id"), "NSG in another region", err.Error())
+		return
+	}
 
 	desired, diags := desiredRules(ctx, plan.Rules, true)
 	resp.Diagnostics.Append(diags...)
@@ -232,6 +236,12 @@ func (r *NSGPeerRulesResource) Delete(ctx context.Context, req resource.DeleteRe
 
 // ImportState takes the NSG OCID: the peer rules are all its rules of type NSG.
 func (r *NSGPeerRulesResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if r.data != nil {
+		if err := r.data.checkRegion("NSG", req.ID); err != nil {
+			resp.Diagnostics.AddError("NSG in another region", err.Error())
+			return
+		}
+	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("nsg_id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("rules"), types.SetValueMust(nsgRuleObjectType, nil))...)
