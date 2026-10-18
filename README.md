@@ -118,10 +118,23 @@ To compile the provider, run `go install`. This will build the provider and put 
 
 To generate or update documentation, run `make generate`.
 
-In order to run the full suite of Acceptance tests, run `make testacc`.
-
-*Note:* Acceptance tests create real resources, and often cost money to run.
+Unit tests need nothing but Go:
 
 ```shell
+make test
+```
+
+Acceptance tests create, change and destroy real NSGs, and change some of them outside Terraform to check drift. They run on your machine, or on GitHub with the *Acceptance Tests* workflow, which only the repository owner can start by hand. They need an OCI CLI profile and a compartment and VCN for the tests. There is no default profile, so they never run against a tenancy by accident.
+
+```shell
+export OCIEXT_TEST_PROFILE=MY_TEST_PROFILE                 # profile of ~/.oci/config
+export OCIEXT_TEST_COMPARTMENT_ID=ocid1.compartment.oc1..
+export OCIEXT_TEST_VCN_ID=ocid1.vcn.oc1..
+export OCIEXT_TEST_REGION=eu-madrid-1                      # optional, defaults to the region of the profile
+export OCIEXT_TEST_CONFIG_FILE=~/ci/oci-config              # optional, defaults to ~/.oci/config
 make testacc
 ```
+
+Every NSG they create is named `ociext-acc-...`. NSGs are free, and the tests delete them at the end; if a run is interrupted, delete the leftovers by that prefix.
+
+The workflow reads its OCI credentials from the `acceptance` environment of the repository: secrets `OCI_USER`, `OCI_FINGERPRINT`, `OCI_TENANCY` and `OCI_PRIVATE_KEY`, and variables `OCI_REGION`, `OCIEXT_TEST_COMPARTMENT_ID` and `OCIEXT_TEST_VCN_ID`. Use an OCI user that can only manage NSGs in the test compartment.

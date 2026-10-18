@@ -1,0 +1,60 @@
+# Acceptance tests against a real OCI tenancy.
+name: Acceptance Tests
+
+# Only by hand: GitHub lets only users with write access run a workflow_dispatch,
+# and pull requests from forks never get the secrets.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never two runs at the same time against the same compartment.
+concurrency:
+  group: acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: 'Acceptance Tests'
+    runs-on: ubuntu-latest
+    # The OCI secrets live in this environment, which only accepts the main branch.
+    environment: acceptance
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+      - name: Write OCI config
+        env:
+          OCI_USER: ${{ secrets.OCI_USER }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_TENANCY: ${{ secrets.OCI_TENANCY }}
+          OCI_REGION: ${{ vars.OCI_REGION }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.oci
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/acc_key.pem
+          chmod 600 ~/.oci/acc_key.pem
+          cat > ~/.oci/config <<EOF
+          [ACC]
+          user=$OCI_USER
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY
+          region=$OCI_REGION
+          key_file=~/.oci/acc_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+      - run: go mod download
+      - name: Run acceptance tests
+        env:
+          TF_ACC: "1"
+          OCIEXT_TEST_PROFILE: ACC
+          OCIEXT_TEST_COMPARTMENT_ID: ${{ vars.OCIEXT_TEST_COMPARTMENT_ID }}
+          OCIEXT_TEST_VCN_ID: ${{ vars.OCIEXT_TEST_VCN_ID }}
+        run: go test -v -cover -timeout 50m ./internal/provider/ -run '^TestAcc'
