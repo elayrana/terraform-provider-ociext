@@ -176,6 +176,7 @@ func apiKeyConfigProvider(path, profile string) (common.ConfigurationProvider, e
 func (p *OCIExtProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewNSGResource,
+		NewNSGPeerRulesResource,
 	}
 }
 

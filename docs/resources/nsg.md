@@ -3,12 +3,12 @@
 page_title: "ociext_nsg Resource - ociext"
 subcategory: ""
 description: |-
-  Network security group with all its security rules in a single resource. Rules are identified by the traffic they match (direction, protocol, source or destination, ports, ICMP type and code), so their order does not matter and adding or removing one only changes that rule. The resource owns every rule of the NSG: rules created outside Terraform are removed on the next apply.
+  Network security group with all its security rules in a single resource. Rules are identified by the traffic they match (direction, protocol, source or destination, ports, ICMP type and code), so their order does not matter and adding or removing one only changes that rule. The resource owns every rule of the NSG whose source or destination is a CIDR block or a service: those rules created outside Terraform are removed on the next apply. Rules that point to an NSG are left alone: they go in ociext_nsg_peer_rules, so that NSGs can reference each other.
 ---
 
 # ociext_nsg (Resource)
 
-Network security group with all its security rules in a single resource. Rules are identified by the traffic they match (direction, protocol, source or destination, ports, ICMP type and code), so their order does not matter and adding or removing one only changes that rule. The resource owns every rule of the NSG: rules created outside Terraform are removed on the next apply.
+Network security group with all its security rules in a single resource. Rules are identified by the traffic they match (direction, protocol, source or destination, ports, ICMP type and code), so their order does not matter and adding or removing one only changes that rule. The resource owns every rule of the NSG whose source or destination is a CIDR block or a service: those rules created outside Terraform are removed on the next apply. Rules that point to an NSG are left alone: they go in `ociext_nsg_peer_rules`, so that NSGs can reference each other.
 
 ## Example Usage
 
@@ -22,11 +22,12 @@ resource "ociext_nsg" "app" {
     { direction = "INGRESS", protocol = "tcp", source = "0.0.0.0/0", ports = "443", description = "Public HTTPS" },
     { direction = "INGRESS", protocol = "tcp", source = "10.0.1.0/24", ports = "22", description = "SSH from bastion" },
     { direction = "INGRESS", protocol = "icmp", source = "10.0.0.0/8", icmp_type = 3, icmp_code = 4 },
-    { direction = "INGRESS", protocol = "tcp", source = oci_core_network_security_group.lb.id, ports = "8000-8100" },
     { direction = "EGRESS", protocol = "all", destination = "all-fra-services-in-oracle-services-network" },
     { direction = "EGRESS", protocol = "all", destination = "0.0.0.0/0" },
   ]
 }
+
+# Rules that point to an NSG (another one or this one) go in ociext_nsg_peer_rules.
 
 # Rules usually come from a variable or a YAML file; their order does not matter.
 resource "ociext_nsg" "db" {
@@ -58,7 +59,7 @@ resource "ociext_nsg" "db" {
 
 - `display_name` (String) Display name. OCI generates one when it is not set.
 - `freeform_tags` (Map of String) Free-form tags.
-- `rules` (Attributes Set) Security rules of the NSG. (see [below for nested schema](#nestedatt--rules))
+- `rules` (Attributes Set) Security rules of the NSG whose source or destination is a CIDR block or a service. Rules that point to an NSG go in `ociext_nsg_peer_rules`. (see [below for nested schema](#nestedatt--rules))
 
 ### Read-Only
 
@@ -70,7 +71,7 @@ resource "ociext_nsg" "db" {
 Required:
 
 - `direction` (String) `INGRESS` or `EGRESS`.
-- `protocol` (String) `all`, `icmp`, `tcp`, `udp`, `icmpv6` or an IANA protocol number.
+- `protocol` (String) `all`, a protocol name or an IANA protocol number between 1 and 254. Names: `icmp` (1), `ipip` (4), `tcp` (6), `udp` (17), `gre` (47), `esp` (50), `ah` (51), `icmpv6` (58), `ospf` (89), `vrrp` (112), `sctp` (132). Ports are only allowed with `tcp` and `udp`, and ICMP type and code with `icmp` and `icmpv6`. A rule keeps the spelling used in the configuration, so `gre` and `47` are the same rule.
 
 Optional:
 
@@ -79,7 +80,7 @@ Optional:
 - `icmp_code` (Number) ICMP code. Needs `icmp_type`; all codes when not set.
 - `icmp_type` (Number) ICMP type. Only for `icmp` and `icmpv6`; all types when not set.
 - `ports` (String) Destination port (`443`) or range (`8000-8100`). Only for `tcp` and `udp`; all ports when not set.
-- `source` (String) Required for `INGRESS`. A CIDR block, the OCID of an NSG or a service CIDR label (e.g. `all-fra-services-in-oracle-services-network`).
+- `source` (String) Required for `INGRESS`. A CIDR block or a service CIDR label (e.g. `all-fra-services-in-oracle-services-network`).
 - `source_ports` (String) Source port or range. Only for `tcp` and `udp`; all ports when not set.
 - `stateless` (Boolean) Whether the rule is stateless. Defaults to `false`. Changing it updates the rule in place.
 

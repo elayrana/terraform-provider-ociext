@@ -7,17 +7,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/core"
@@ -33,8 +29,6 @@ var (
 )
 
 const nsgWaitTimeout = 10 * time.Minute
-
-var nsgRuleObjectType = types.ObjectType{AttrTypes: nsgRuleAttrTypes}
 
 func NewNSGResource() resource.Resource {
 	return &NSGResource{}
@@ -64,7 +58,9 @@ func (r *NSGResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 		MarkdownDescription: "Network security group with all its security rules in a single resource. " +
 			"Rules are identified by the traffic they match (direction, protocol, source or destination, ports, ICMP type and code), " +
 			"so their order does not matter and adding or removing one only changes that rule. " +
-			"The resource owns every rule of the NSG: rules created outside Terraform are removed on the next apply.",
+			"The resource owns every rule of the NSG whose source or destination is a CIDR block or a service: " +
+			"those rules created outside Terraform are removed on the next apply. " +
+			"Rules that point to an NSG are left alone: they go in `ociext_nsg_peer_rules`, so that NSGs can reference each other.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "OCID of the network security group.",
@@ -97,136 +93,31 @@ func (r *NSGResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				ElementType:         types.StringType,
 				Optional:            true,
 			},
-			"rules": schema.SetNestedAttribute{
-				MarkdownDescription: "Security rules of the NSG.",
-				Optional:            true,
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"direction": schema.StringAttribute{
-							MarkdownDescription: "`INGRESS` or `EGRESS`.",
-							Required:            true,
-							Validators: []validator.String{
-								stringvalidator.OneOf(directionIngress, directionEgress),
-							},
-						},
-						"protocol": schema.StringAttribute{
-							MarkdownDescription: "`all`, `icmp`, `tcp`, `udp`, `icmpv6` or an IANA protocol number.",
-							Required:            true,
-						},
-						"source": schema.StringAttribute{
-							MarkdownDescription: "Required for `INGRESS`. A CIDR block, the OCID of an NSG or a service CIDR label (e.g. `all-fra-services-in-oracle-services-network`).",
-							Optional:            true,
-						},
-						"destination": schema.StringAttribute{
-							MarkdownDescription: "Required for `EGRESS`. Same formats as `source`.",
-							Optional:            true,
-						},
-						"ports": schema.StringAttribute{
-							MarkdownDescription: "Destination port (`443`) or range (`8000-8100`). Only for `tcp` and `udp`; all ports when not set.",
-							Optional:            true,
-						},
-						"source_ports": schema.StringAttribute{
-							MarkdownDescription: "Source port or range. Only for `tcp` and `udp`; all ports when not set.",
-							Optional:            true,
-						},
-						"icmp_type": schema.Int64Attribute{
-							MarkdownDescription: "ICMP type. Only for `icmp` and `icmpv6`; all types when not set.",
-							Optional:            true,
-						},
-						"icmp_code": schema.Int64Attribute{
-							MarkdownDescription: "ICMP code. Needs `icmp_type`; all codes when not set.",
-							Optional:            true,
-						},
-						"description": schema.StringAttribute{
-							MarkdownDescription: "Description. Changing it updates the rule in place.",
-							Optional:            true,
-						},
-						"stateless": schema.BoolAttribute{
-							MarkdownDescription: "Whether the rule is stateless. Defaults to `false`. Changing it updates the rule in place.",
-							Optional:            true,
-							Computed:            true,
-							Default:             booldefault.StaticBool(false),
-						},
-					},
-				},
-			},
+			"rules": rulesAttribute(false),
 		},
 	}
 }
 
 func (r *NSGResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	// Prevent panic if the provider has not been configured.
-	if req.ProviderData == nil {
-		return
-	}
-
-	data, ok := req.ProviderData.(*providerData)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *providerData, got: %T. Please report this issue to the provider developers.", req.ProviderData),
-		)
-		return
-	}
-
-	r.data = data
+	r.data = configuredData(req.ProviderData, &resp.Diagnostics)
 }
 
 // ValidateConfig checks every rule and rejects two rules that match the same traffic.
 func (r *NSGResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var rules types.Set
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("rules"), &rules)...)
-	if resp.Diagnostics.HasError() || rules.IsNull() || rules.IsUnknown() {
+	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	seen := map[string]bool{}
-	for _, elem := range rules.Elements() {
-		obj, ok := elem.(types.Object)
-		if !ok || obj.IsUnknown() {
-			continue
-		}
-		var m nsgRuleModel
-		diags := obj.As(ctx, &m, basetypes.ObjectAsOptions{})
-		resp.Diagnostics.Append(diags...)
-		if diags.HasError() {
-			return
-		}
-		if !m.isFullyKnown() {
-			continue
-		}
-
-		rule, err := m.toRule()
-		if err != nil {
-			resp.Diagnostics.AddAttributeError(path.Root("rules"), "Invalid NSG rule", err.Error())
-			continue
-		}
-		k := rule.key()
-		if seen[k] {
-			resp.Diagnostics.AddAttributeError(path.Root("rules"), "Duplicate NSG rule",
-				fmt.Sprintf("More than one rule matches the same traffic (%s). Only description or stateless differ; keep one of them.", k))
-		}
-		seen[k] = true
-	}
+	resp.Diagnostics.Append(validateRules(ctx, rules, false)...)
 }
 
 // ModifyPlan enforces the rules-per-NSG limit at plan time instead of failing halfway through an apply.
 func (r *NSGResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.Plan.Raw.IsNull() || r.data == nil {
+	if r.data == nil {
 		return
 	}
-
-	var rules types.Set
-	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("rules"), &rules)...)
-	if resp.Diagnostics.HasError() || rules.IsUnknown() {
-		return
-	}
-
-	if n := len(rules.Elements()); n > r.data.maxRulesPerNSG {
-		resp.Diagnostics.AddAttributeError(path.Root("rules"), "Too many NSG rules",
-			fmt.Sprintf("The NSG has %d rules and the limit is %d. Split the rules across several NSGs, or set max_rules_per_nsg in the provider if your tenancy has a higher limit.",
-				n, r.data.maxRulesPerNSG))
-	}
+	resp.Diagnostics.Append(checkRuleLimit(ctx, req.Plan, r.data.maxRulesPerNSG)...)
 }
 
 func (r *NSGResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -237,7 +128,7 @@ func (r *NSGResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
-	desired, diags := desiredRules(ctx, plan.Rules)
+	desired, diags := desiredRules(ctx, plan.Rules, false)
 	resp.Diagnostics.Append(diags...)
 	tags, diags := freeformTags(ctx, plan.FreeformTags)
 	resp.Diagnostics.Append(diags...)
@@ -278,7 +169,7 @@ func (r *NSGResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
-	resp.Diagnostics.Append(r.applyRuleChanges(ctx, nsgID, diffRules(desired, nil))...)
+	resp.Diagnostics.Append(r.data.applyRuleChanges(ctx, nsgID, diffRules(desired, nil))...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -317,27 +208,15 @@ func (r *NSGResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		state.FreeformTags = tags
 	}
 
-	live, err := r.listRules(ctx, nsgID)
+	live, err := r.data.listRules(ctx, nsgID)
 	if err != nil {
 		resp.Diagnostics.AddError("Unable to read NSG rules", err.Error())
 		return
 	}
 
-	var prior []nsgRuleModel
-	if !state.Rules.IsNull() && !state.Rules.IsUnknown() {
-		resp.Diagnostics.Append(state.Rules.ElementsAs(ctx, &prior, false)...)
-	}
-	models, duplicates := stateRules(prior, live)
-	for _, k := range duplicates {
-		resp.Diagnostics.AddWarning("Duplicate NSG rule in OCI",
-			fmt.Sprintf("NSG %s has more than one rule matching %s. The extra copies are removed on the next apply that changes the rules.", nsgID, k))
-	}
-
-	if len(models) > 0 || !state.Rules.IsNull() {
-		rules, diags := types.SetValueFrom(ctx, nsgRuleObjectType, models)
-		resp.Diagnostics.Append(diags...)
-		state.Rules = rules
-	}
+	rules, diags := rulesToState(ctx, state.Rules, inScope(live, false), nsgID)
+	resp.Diagnostics.Append(diags...)
+	state.Rules = rules
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -392,18 +271,18 @@ func (r *NSGResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	}
 
 	if !plan.Rules.Equal(state.Rules) {
-		desired, diags := desiredRules(ctx, plan.Rules)
+		desired, diags := desiredRules(ctx, plan.Rules, false)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
 		// Diff against OCI, not against state, so the apply also fixes changes made since the last refresh.
-		live, err := r.listRules(ctx, nsgID)
+		live, err := r.data.listRules(ctx, nsgID)
 		if err != nil {
 			resp.Diagnostics.AddError("Unable to read NSG rules", err.Error())
 			return
 		}
-		resp.Diagnostics.Append(r.applyRuleChanges(ctx, nsgID, diffRules(desired, live))...)
+		resp.Diagnostics.Append(r.data.applyRuleChanges(ctx, nsgID, diffRules(desired, inScope(live, false)))...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
@@ -443,80 +322,6 @@ func (r *NSGResource) ImportState(ctx context.Context, req resource.ImportStateR
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-// applyRuleChanges adds new rules before removing old ones, so a rule that is
-// replaced (its traffic changed) never leaves a gap without access.
-func (r *NSGResource) applyRuleChanges(ctx context.Context, nsgID string, c ruleChanges) diag.Diagnostics {
-	var diags diag.Diagnostics
-	tflog.Info(ctx, "Applying NSG rule changes", map[string]any{
-		"id": nsgID, "add": len(c.Add), "update": len(c.Update), "remove": len(c.Remove),
-	})
-
-	for _, batch := range chunks(c.Add, maxRulesPerCall) {
-		details := make([]core.AddSecurityRuleDetails, len(batch))
-		for i, rule := range batch {
-			details[i] = rule.toAddDetails()
-		}
-		_, err := r.data.network.AddNetworkSecurityGroupSecurityRules(ctx, core.AddNetworkSecurityGroupSecurityRulesRequest{
-			NetworkSecurityGroupId:                      common.String(nsgID),
-			AddNetworkSecurityGroupSecurityRulesDetails: core.AddNetworkSecurityGroupSecurityRulesDetails{SecurityRules: details},
-		})
-		if err != nil {
-			diags.AddError("Unable to add NSG rules", err.Error())
-			return diags
-		}
-	}
-
-	for _, batch := range chunks(c.Update, maxRulesPerCall) {
-		details := make([]core.UpdateSecurityRuleDetails, len(batch))
-		for i, l := range batch {
-			details[i] = l.Rule.toUpdateDetails(l.ID)
-		}
-		_, err := r.data.network.UpdateNetworkSecurityGroupSecurityRules(ctx, core.UpdateNetworkSecurityGroupSecurityRulesRequest{
-			NetworkSecurityGroupId:                         common.String(nsgID),
-			UpdateNetworkSecurityGroupSecurityRulesDetails: core.UpdateNetworkSecurityGroupSecurityRulesDetails{SecurityRules: details},
-		})
-		if err != nil {
-			diags.AddError("Unable to update NSG rules", err.Error())
-			return diags
-		}
-	}
-
-	for _, batch := range chunks(c.Remove, maxRulesPerCall) {
-		_, err := r.data.network.RemoveNetworkSecurityGroupSecurityRules(ctx, core.RemoveNetworkSecurityGroupSecurityRulesRequest{
-			NetworkSecurityGroupId:                         common.String(nsgID),
-			RemoveNetworkSecurityGroupSecurityRulesDetails: core.RemoveNetworkSecurityGroupSecurityRulesDetails{SecurityRuleIds: batch},
-		})
-		if err != nil {
-			diags.AddError("Unable to remove NSG rules", err.Error())
-			return diags
-		}
-	}
-
-	return diags
-}
-
-func (r *NSGResource) listRules(ctx context.Context, nsgID string) ([]liveRule, error) {
-	var out []liveRule
-	req := core.ListNetworkSecurityGroupSecurityRulesRequest{NetworkSecurityGroupId: common.String(nsgID)}
-	for {
-		page, err := r.data.network.ListNetworkSecurityGroupSecurityRules(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		for _, s := range page.Items {
-			l, err := ruleFromOCI(s)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, l)
-		}
-		if page.OpcNextPage == nil {
-			return out, nil
-		}
-		req.Page = page.OpcNextPage
-	}
-}
-
 func (r *NSGResource) waitForState(ctx context.Context, nsgID string, target core.NetworkSecurityGroupLifecycleStateEnum) error {
 	deadline := time.Now().Add(nsgWaitTimeout)
 	for {
@@ -540,31 +345,6 @@ func (r *NSGResource) waitForState(ctx context.Context, nsgID string, target cor
 		case <-time.After(3 * time.Second):
 		}
 	}
-}
-
-// desiredRules converts the planned rules set. Values are always known at apply time.
-func desiredRules(ctx context.Context, set types.Set) ([]nsgRule, diag.Diagnostics) {
-	var diags diag.Diagnostics
-	if set.IsNull() {
-		return nil, diags
-	}
-
-	var models []nsgRuleModel
-	diags.Append(set.ElementsAs(ctx, &models, false)...)
-	if diags.HasError() {
-		return nil, diags
-	}
-
-	rules := make([]nsgRule, 0, len(models))
-	for _, m := range models {
-		rule, err := m.toRule()
-		if err != nil {
-			diags.AddAttributeError(path.Root("rules"), "Invalid NSG rule", err.Error())
-			continue
-		}
-		rules = append(rules, rule)
-	}
-	return rules, diags
 }
 
 func freeformTags(ctx context.Context, m types.Map) (map[string]string, diag.Diagnostics) {

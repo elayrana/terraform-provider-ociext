@@ -34,21 +34,30 @@ const (
 	protocolICMPv6 = "58"
 )
 
-var protocolNumbers = map[string]string{
-	"all":    protocolAll,
-	"icmp":   protocolICMP,
-	"tcp":    protocolTCP,
-	"udp":    protocolUDP,
-	"icmpv6": protocolICMPv6,
-}
-
+// protocolNames are the protocols that can be written by name. Any other
+// protocol is written as its IANA number.
 var protocolNames = map[string]string{
 	protocolAll:    "all",
 	protocolICMP:   "icmp",
+	"4":            "ipip",
 	protocolTCP:    "tcp",
 	protocolUDP:    "udp",
+	"47":           "gre",
+	"50":           "esp",
+	"51":           "ah",
 	protocolICMPv6: "icmpv6",
+	"89":           "ospf",
+	"112":          "vrrp",
+	"132":          "sctp",
 }
+
+var protocolNumbers = func() map[string]string {
+	m := make(map[string]string, len(protocolNames))
+	for number, name := range protocolNames {
+		m[name] = number
+	}
+	return m
+}()
 
 var serviceCIDRLabel = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
@@ -146,16 +155,39 @@ func protocolDisplay(number string) string {
 	return number
 }
 
+// OCI accepts the IANA protocol numbers 1 to 254: it rejects 0 (HOPOPT) and 255 (reserved).
+const (
+	minProtocolNumber = 1
+	maxProtocolNumber = 254
+)
+
 func parseProtocol(v string) (string, error) {
 	v = strings.ToLower(strings.TrimSpace(v))
 	if n, ok := protocolNumbers[v]; ok {
 		return n, nil
 	}
 	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 || n > 255 {
-		return "", fmt.Errorf("protocol %q must be all, icmp, tcp, udp, icmpv6 or a number between 0 and 255", v)
+	if err != nil || n < minProtocolNumber || n > maxProtocolNumber {
+		return "", fmt.Errorf("protocol %q must be all, a protocol name (%s) or a number between %d and %d",
+			v, strings.Join(protocolNameList(), ", "), minProtocolNumber, maxProtocolNumber)
 	}
 	return strconv.Itoa(n), nil
+}
+
+// protocolNameList returns the protocol names other than all, sorted by number.
+func protocolNameList() []string {
+	numbers := make([]int, 0, len(protocolNames))
+	for number := range protocolNames {
+		if n, err := strconv.Atoi(number); err == nil {
+			numbers = append(numbers, n)
+		}
+	}
+	sort.Ints(numbers)
+	names := make([]string, len(numbers))
+	for i, n := range numbers {
+		names[i] = protocolNames[strconv.Itoa(n)]
+	}
+	return names
 }
 
 func parsePorts(v string) (*portRange, error) {
@@ -184,6 +216,49 @@ func parseTarget(v string) (value, kind string, err error) {
 		return v, targetService, nil
 	}
 	return "", "", fmt.Errorf("%q is not a CIDR block, an NSG OCID or a service CIDR label", v)
+}
+
+// isPeer reports whether the rule points to an NSG. Those rules belong to
+// ociext_nsg_peer_rules and every other rule to ociext_nsg, so that NSGs can
+// reference each other (or themselves) without a dependency cycle.
+func (r nsgRule) isPeer() bool { return r.TargetType == targetNSG }
+
+// checkScope rejects a rule that belongs to the other resource.
+func (r nsgRule) checkScope(peers bool) error {
+	switch {
+	case peers && !r.isPeer():
+		return fmt.Errorf("%s does not point to an NSG: rules with a CIDR block or a service go in the rules of ociext_nsg", r.key())
+	case !peers && r.isPeer():
+		return fmt.Errorf("%s points to an NSG: those rules go in ociext_nsg_peer_rules, so that NSGs can reference each other without a dependency cycle", r.key())
+	}
+	return nil
+}
+
+// inScope keeps the live rules managed by ociext_nsg_peer_rules (peers) or by ociext_nsg.
+func inScope(live []liveRule, peers bool) []liveRule {
+	var out []liveRule
+	for _, l := range live {
+		if l.Rule.isPeer() == peers {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// foreignRules returns the keys of the live rules that are not in desired.
+func foreignRules(desired []nsgRule, live []liveRule) []string {
+	wanted := map[string]bool{}
+	for _, d := range desired {
+		wanted[d.key()] = true
+	}
+	var keys []string
+	for _, l := range live {
+		if k := l.Rule.key(); !wanted[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func isPortProtocol(p string) bool { return p == protocolTCP || p == protocolUDP }

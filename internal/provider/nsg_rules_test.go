@@ -110,6 +110,8 @@ func TestRuleValidation(t *testing.T) {
 		"ingress with destination": ingressWithDestination,
 		"egress with source":       func() nsgRuleModel { m := egress("all", "0.0.0.0/0"); m.Source = types.StringValue("x"); return m }(),
 		"bad protocol":             ingress("http", "0.0.0.0/0"),
+		"protocol 0":               ingress("0", "0.0.0.0/0"),
+		"protocol 255":             ingress("255", "0.0.0.0/0"),
 		"bad target":               ingress("tcp", "Not A CIDR"),
 		"ports on icmp":            portsOnICMP,
 		"icmp on tcp":              icmpOnTCP,
@@ -233,5 +235,141 @@ func TestChunks(t *testing.T) {
 	got := chunks(s, maxRulesPerCall)
 	if len(got) != 3 || len(got[0]) != 25 || len(got[2]) != 10 {
 		t.Errorf("chunks sizes wrong: %d batches", len(got))
+	}
+}
+
+func TestRuleScope(t *testing.T) {
+	const nsg = "ocid1.networksecuritygroup.oc1.eu-madrid-1.aaaa"
+	peer := mustRule(t, ingress("tcp", nsg))
+	cidr := mustRule(t, ingress("tcp", "10.0.0.0/8"))
+	service := mustRule(t, egress("all", "all-mad-services-in-oracle-services-network"))
+
+	cases := []struct {
+		name  string
+		rule  nsgRule
+		peers bool
+		ok    bool
+	}{
+		{"peer in ociext_nsg", peer, false, false},
+		{"peer in peer_rules", peer, true, true},
+		{"cidr in ociext_nsg", cidr, false, true},
+		{"cidr in peer_rules", cidr, true, false},
+		{"service in ociext_nsg", service, false, true},
+		{"service in peer_rules", service, true, false},
+	}
+	for _, c := range cases {
+		if err := c.rule.checkScope(c.peers); (err == nil) != c.ok {
+			t.Errorf("%s: checkScope = %v, want ok=%v", c.name, err, c.ok)
+		}
+	}
+}
+
+func TestInScopeKeepsOtherResourceRules(t *testing.T) {
+	peer := mustRule(t, ingress("tcp", "ocid1.networksecuritygroup.oc1.eu-madrid-1.bbbb"))
+	cidr := mustRule(t, ingress("tcp", "10.0.0.0/8"))
+	live := []liveRule{{ID: "peer", Rule: peer}, {ID: "cidr", Rule: cidr}}
+
+	if got := inScope(live, true); len(got) != 1 || got[0].ID != "peer" {
+		t.Errorf("inScope(peers) = %+v", got)
+	}
+	if got := inScope(live, false); len(got) != 1 || got[0].ID != "cidr" {
+		t.Errorf("inScope(ociext_nsg) = %+v", got)
+	}
+
+	// ociext_nsg with no rules must not remove the peer rule, and the other way round.
+	if c := diffRules(nil, inScope(live, false)); !reflect.DeepEqual(c.Remove, []string{"cidr"}) {
+		t.Errorf("ociext_nsg Remove = %v", c.Remove)
+	}
+	if c := diffRules(nil, inScope(live, true)); !reflect.DeepEqual(c.Remove, []string{"peer"}) {
+		t.Errorf("peer_rules Remove = %v", c.Remove)
+	}
+}
+
+func TestForeignRules(t *testing.T) {
+	const nsgA = "ocid1.networksecuritygroup.oc1.eu-madrid-1.aaaa"
+	const nsgB = "ocid1.networksecuritygroup.oc1.eu-madrid-1.bbbb"
+	ours := mustRule(t, ingress("tcp", nsgA))
+	theirs := mustRule(t, ingress("all", nsgB))
+
+	ourCopy := ours
+	ourCopy.Description = "same traffic, other description"
+	live := []liveRule{{ID: "1", Rule: ourCopy}, {ID: "2", Rule: theirs}}
+
+	got := foreignRules([]nsgRule{ours}, live)
+	if want := []string{theirs.key()}; !reflect.DeepEqual(got, want) {
+		t.Errorf("foreignRules = %v, want %v", got, want)
+	}
+	if got := foreignRules([]nsgRule{ours, theirs}, live); len(got) != 0 {
+		t.Errorf("foreignRules with all rules desired = %v, want none", got)
+	}
+}
+
+func TestProtocolNames(t *testing.T) {
+	cases := map[string]string{"all": "all", "IPIP": "4", "gre": "47", "esp": "50", "ah": "51", "ospf": "89", "vrrp": "112", "sctp": "132", "1": "1", "254": "254"}
+	for in, want := range cases {
+		if got, err := parseProtocol(in); err != nil || got != want {
+			t.Errorf("parseProtocol(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+
+	// A name and its number are the same rule.
+	byName := ingress("gre", "10.0.0.0/8")
+	byNumber := ingress("47", "10.0.0.0/8")
+	if a, b := mustRule(t, byName).key(), mustRule(t, byNumber).key(); a != b || a != "INGRESS_gre_10.0.0.0/8" {
+		t.Errorf("keys = %q, %q; want both INGRESS_gre_10.0.0.0/8", a, b)
+	}
+}
+
+func TestOptionsAllowedByProtocol(t *testing.T) {
+	type option int
+	const (
+		ports option = iota
+		sourcePorts
+		icmpType
+		icmpCode
+	)
+	with := func(protocol string, o option) nsgRuleModel {
+		m := ingress(protocol, "10.0.0.0/8")
+		switch o {
+		case ports:
+			m.Ports = types.StringValue("443")
+		case sourcePorts:
+			m.SourcePorts = types.StringValue("1024-65535")
+		case icmpType:
+			m.IcmpType = types.Int64Value(3)
+		case icmpCode:
+			m.IcmpType = types.Int64Value(3)
+			m.IcmpCode = types.Int64Value(4)
+		}
+		return m
+	}
+
+	allowed := map[option][]string{
+		ports:       {"tcp", "udp", "6", "17", "TCP"},
+		sourcePorts: {"tcp", "udp", "6", "17"},
+		icmpType:    {"icmp", "icmpv6", "1", "58"},
+		icmpCode:    {"icmp", "icmpv6", "1", "58"},
+	}
+	rejected := map[option][]string{
+		ports:       {"all", "icmp", "icmpv6", "gre", "esp", "sctp", "1", "47", "132"},
+		sourcePorts: {"all", "icmp", "icmpv6", "gre", "sctp"},
+		icmpType:    {"all", "tcp", "udp", "gre", "6", "17"},
+		icmpCode:    {"all", "tcp", "udp", "ipip"},
+	}
+	names := map[option]string{ports: "ports", sourcePorts: "source_ports", icmpType: "icmp_type", icmpCode: "icmp_code"}
+
+	for o, protocols := range allowed {
+		for _, p := range protocols {
+			if _, err := with(p, o).toRule(); err != nil {
+				t.Errorf("%s with %s: unexpected error %v", names[o], p, err)
+			}
+		}
+	}
+	for o, protocols := range rejected {
+		for _, p := range protocols {
+			if _, err := with(p, o).toRule(); err == nil {
+				t.Errorf("%s with %s: expected an error", names[o], p)
+			}
+		}
 	}
 }
