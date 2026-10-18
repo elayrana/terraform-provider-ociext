@@ -132,9 +132,10 @@ export OCIEXT_TEST_COMPARTMENT_ID=ocid1.compartment.oc1..
 export OCIEXT_TEST_VCN_ID=ocid1.vcn.oc1..
 export OCIEXT_TEST_REGION=eu-madrid-1                      # optional, defaults to the region of the profile
 export OCIEXT_TEST_CONFIG_FILE=~/ci/oci-config              # optional, defaults to ~/.oci/config
+export OCIEXT_TEST_DEFINED_TAG=ext-test.env                # optional, a defined tag the tests may set; without it they skip defined tags
 make testacc
 ```
 
 Every NSG they create is named `ociext-acc-...`. NSGs are free, and the tests delete them at the end; if a run is interrupted, delete the leftovers by that prefix.
 
-The workflow reads its OCI credentials from the `acceptance` environment of the repository: secrets `OCI_USER`, `OCI_FINGERPRINT`, `OCI_TENANCY` and `OCI_PRIVATE_KEY`, and variables `OCI_REGION`, `OCIEXT_TEST_COMPARTMENT_ID` and `OCIEXT_TEST_VCN_ID`. Use an OCI user that can only manage NSGs in the test compartment.
+The workflow reads its OCI credentials from the `acceptance` environment of the repository: secrets `OCI_USER`, `OCI_FINGERPRINT`, `OCI_TENANCY` and `OCI_PRIVATE_KEY`, and variables `OCI_REGION`, `OCIEXT_TEST_COMPARTMENT_ID`, `OCIEXT_TEST_VCN_ID` and `OCIEXT_TEST_DEFINED_TAG`. Use an OCI user that can only manage the network in the test compartment, and use the tag namespace of the test tag.

@@ -57,4 +57,5 @@ jobs:
           OCIEXT_TEST_PROFILE: ACC
           OCIEXT_TEST_COMPARTMENT_ID: ${{ vars.OCIEXT_TEST_COMPARTMENT_ID }}
           OCIEXT_TEST_VCN_ID: ${{ vars.OCIEXT_TEST_VCN_ID }}
+          OCIEXT_TEST_DEFINED_TAG: ${{ vars.OCIEXT_TEST_DEFINED_TAG }}
         run: go test -v -cover -timeout 50m ./internal/provider/ -run '^TestAcc'
