@@ -138,6 +138,22 @@ func testAccCheckLiveRules(t *testing.T, id *string, wantCIDR, wantPeer int) fun
 	}
 }
 
+// testAccCheckNoDescriptions fails when a rule of the NSG has a description in OCI.
+func testAccCheckNoDescriptions(t *testing.T, id *string) func(*terraform.State) error {
+	return func(*terraform.State) error {
+		live, err := testAccData(t).listRules(context.Background(), *id)
+		if err != nil {
+			return err
+		}
+		for _, l := range live {
+			if l.Rule.Description != "" {
+				return fmt.Errorf("rule %s of NSG %s still has the description %q", l.ID, *id, l.Rule.Description)
+			}
+		}
+		return nil
+	}
+}
+
 // testAccCaptureRuleIDs stores the OCI rule IDs of an NSG.
 func testAccCaptureRuleIDs(t *testing.T, id *string, ids map[string]bool) func(*terraform.State) error {
 	return func(*terraform.State) error {

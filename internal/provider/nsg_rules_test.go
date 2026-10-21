@@ -170,6 +170,22 @@ func TestRuleRoundTripThroughOCI(t *testing.T) {
 	}
 }
 
+// OCI rejects an empty description, and leaving it out of an update clears it.
+func TestRuleDetailsWithoutDescription(t *testing.T) {
+	r := mustRule(t, ingress("tcp", "10.0.0.0/8"))
+	if d := r.toAddDetails(); d.Description != nil {
+		t.Errorf("add details description = %q, want nil", *d.Description)
+	}
+	if d := r.toUpdateDetails("rule-1"); d.Description != nil {
+		t.Errorf("update details description = %q, want nil", *d.Description)
+	}
+
+	r.Description = "dns"
+	if d := r.toUpdateDetails("rule-1"); d.Description == nil || *d.Description != "dns" {
+		t.Errorf("update details description = %v, want dns", d.Description)
+	}
+}
+
 func TestDiffRules(t *testing.T) {
 	https := ingress("tcp", "0.0.0.0/0")
 	https.Ports = types.StringValue("443")

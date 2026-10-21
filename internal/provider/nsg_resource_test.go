@@ -76,6 +76,22 @@ func TestAccNSG_basic(t *testing.T) {
 				),
 			},
 			{
+				// Remove the description: the rule is updated in place and OCI clears it.
+				Config: testAccNSGConfig(name+"-renamed", `[
+    { direction = "INGRESS", protocol = "tcp", source = "0.0.0.0/0", ports = "443" },
+    { direction = "INGRESS", protocol = "tcp", source = "10.0.5.0/24", ports = "22" },
+    { direction = "INGRESS", protocol = "icmp", source = "0.0.0.0/0", icmp_type = 3, icmp_code = 4 },
+    { direction = "EGRESS", protocol = "all", destination = "0.0.0.0/0" },
+  ]`, `freeform_tags = {}`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckTypeSetElemNestedAttrs("ociext_nsg.test", "rules.*", map[string]string{
+						"protocol": "tcp", "source": "0.0.0.0/0", "ports": "443",
+					}),
+					testAccCheckRulesKept(t, &id, ruleIDs, 3),
+					testAccCheckNoDescriptions(t, &id),
+				),
+			},
+			{
 				ResourceName:      "ociext_nsg.test",
 				ImportState:       true,
 				ImportStateVerify: true,

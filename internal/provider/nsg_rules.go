@@ -488,8 +488,11 @@ func (r nsgRule) toUpdateDetails(id string) core.UpdateSecurityRuleDetails {
 		UdpOptions:  udp,
 		IcmpOptions: icmp,
 		IsStateless: common.Bool(r.Stateless),
-		// Always sent so that removing a description clears it.
-		Description: common.String(r.Description),
+	}
+	// The update replaces the whole rule, so leaving the description out clears it.
+	// OCI rejects an empty description with InvalidParameter.
+	if r.Description != "" {
+		d.Description = common.String(r.Description)
 	}
 	if source != nil {
 		d.SourceType = core.UpdateSecurityRuleDetailsSourceTypeEnum(r.TargetType)

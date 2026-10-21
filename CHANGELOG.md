@@ -1,3 +1,9 @@
+## 0.2.1 (October 21, 2026)
+
+BUG FIXES:
+
+* `ociext_nsg` and `ociext_nsg_peer_rules`: removing the description of an existing rule failed with `InvalidParameter`, because OCI rejects an empty description. The update now leaves it out, which clears it.
+
 ## 0.2.0 (October 18, 2026)
 
 FEATURES:
