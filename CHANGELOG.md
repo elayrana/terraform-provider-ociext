@@ -4,6 +4,10 @@ BUG FIXES:
 
 * `ociext_nsg` and `ociext_nsg_peer_rules`: removing the description of an existing rule failed with `InvalidParameter`, because OCI rejects an empty description. The update now leaves it out, which clears it.
 
+SECURITY:
+
+* Update `google.golang.org/grpc` to 1.83.1, which fixes GHSA advisories reported by Dependabot for 1.82.1.
+
 ## 0.2.0 (October 18, 2026)
 
 FEATURES:
